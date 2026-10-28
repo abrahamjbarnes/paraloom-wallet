@@ -305,24 +305,16 @@ export function Home({ onLock }: HomeProps) {
     } catch {
       // transfer node down / no scan endpoint — ignore
     }
-    // Recover any re-shield whose deposit landed on-chain but whose note was
-    // never persisted (or whose deposit never ran but the token is still at the
-    // fresh address). Runs directly in the popup — no service-worker relay — so
-    // it always fires when the wallet is opened, and the reads below then reflect
-    // the recovered shielded balance.
-    try {
-      await recoverReshields(getConnection(network), wallet.shieldedAddress)
-    } catch {
-      // best-effort — the reads below still show whatever is already local
-    }
     // Resolve stranded swap rows so Activity stops showing settled swaps as
-    // "Pending" forever. Private swaps are mainnet-only, so this always runs
-    // against the mainnet archival RPC regardless of the selected network. It
-    // finishes a swap whose leg never ran and records one that already landed;
-    // rows it cannot account for are left for the user to dismiss.
+    // "Pending" forever. Private swaps are mainnet-only, so both reconciliation
+    // and re-shield recovery always run against the mainnet archival RPC
+    // regardless of the selected network, and reconciliation runs first so a
+    // landed swap whose signature it fills in is immediately eligible for
+    // re-shield recovery on the same popup open.
+    const mainnetConnection = getConnection("mainnet-beta")
     try {
       const resolved = await reconcileSwapOutputs(
-        getConnection("mainnet-beta"),
+        mainnetConnection,
         wallet.shieldedAddress
       )
       if (resolved > 0) {
@@ -330,6 +322,16 @@ export function Home({ onLock }: HomeProps) {
       }
     } catch {
       // best-effort
+    }
+    // Recover any re-shield whose deposit landed on-chain but whose note was
+    // never persisted (or whose deposit never ran but the token is still at the
+    // fresh address). Runs directly in the popup — no service-worker relay — so
+    // it always fires when the wallet is opened, and the reads below then reflect
+    // the recovered shielded balance.
+    try {
+      await recoverReshields(mainnetConnection, wallet.shieldedAddress)
+    } catch {
+      // best-effort — the reads below still show whatever is already local
     }
     try {
       setShieldedLamports(await shieldedBalance(wallet.shieldedAddress))

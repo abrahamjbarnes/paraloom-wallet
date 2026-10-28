@@ -69,7 +69,7 @@ export async function depositV3(
   shieldedAddress: string,
   spendPrivkeyHex: string,
   lamports: bigint
-): Promise<{ signature: string; leafIndex: number }> {
+): Promise<{ signature: string; leafIndex: number; blindingHex: string }> {
   const blindingHex = randomHex32()
   const pubkeyHex = await v3NotePubkey(spendPrivkeyHex)
   const payer = Keypair.fromSecretKey(wallet.secretKey)
@@ -131,7 +131,7 @@ export async function depositV3(
   // Finalize the persisted note with its now-known leaf index, saving
   // ensureLeafIndex a full-history rebuild at spend time.
   await setNoteLeafIndex(shieldedAddress, commitment, leafIndex)
-  return { signature, leafIndex }
+  return { signature, leafIndex, blindingHex }
 }
 
 /// Locate a note's leaf index by its commitment (for received notes that were

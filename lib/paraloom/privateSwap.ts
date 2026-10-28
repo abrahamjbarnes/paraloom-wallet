@@ -24,7 +24,7 @@ import {
   VersionedTransaction
 } from "@solana/web3.js"
 
-import { assetIdForMint } from "~lib/prover"
+import { assetIdForMint, NATIVE_ASSET_HEX } from "~lib/prover"
 
 import { associatedTokenAddress, createTokenAccount, depositSpl } from "./bridge"
 import { SWAP_ROUTER_URL } from "./constants"
@@ -611,13 +611,20 @@ export async function privateSwapFromToken(
       const solBal = BigInt(await connection.getBalance(fresh.publicKey))
       const reshieldLamports = solBal - RESHIELD_FEE_RESERVE
       if (reshieldLamports > 0n) {
-        await depositV3(
+        const dep = await depositV3(
           connection,
           { secretKey: fresh.secretKey },
           shieldedAddress,
           spendPrivkeyHex,
           reshieldLamports
         )
+        reshielded = {
+          assetId: NATIVE_ASSET_HEX,
+          mint: "",
+          amount: reshieldLamports.toString(),
+          blindingHex: dep.blindingHex,
+          depositSignature: dep.signature
+        }
       }
     } catch {
       // leave the swapped SOL as a private buy at the fresh address

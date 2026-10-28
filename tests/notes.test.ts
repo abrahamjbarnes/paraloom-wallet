@@ -3,11 +3,16 @@ import {
   addNote,
   getNotes,
   markNoteSpentByIdentity,
+  PHANTOM_NOTE_GRACE_MS,
+  reconcilePhantomNotes,
   shieldedBalance,
   shieldedTokenBalances,
   type ShieldedNote
 } from "~lib/paraloom/notes"
-import { beforeEach, describe, expect, it } from "vitest"
+import { persistReshieldedNote } from "~lib/paraloom/reshieldRecovery"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("~lib/prover", () => ({ NATIVE_ASSET_HEX: "00".repeat(32) }))
 import { installFakeChrome } from "./support/chromeStorage"
 
 const ACCOUNT = "paraloom1" + "11".repeat(64)
@@ -198,5 +203,89 @@ describe("note storage", () => {
     await addNote(ACCOUNT, deposit({ signature: "s1" }))
     await addNote(ACCOUNT, deposit({ signature: "s2", spent: true }))
     expect(await shieldedBalance(ACCOUNT)).toBe(1000n)
+  })
+})
+
+describe("reconcilePhantomNotes and native SOL round-trip reshield persistence", () => {
+  const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+  const USDC_ASSET = "dd".repeat(32)
+  const NOW = 1_000_000
+
+  it("reconciles phantom SPL token and native SOL change notes in a single tree fetch while keeping on-chain, fresh, and deposit notes", async () => {
+    const phantomSpl = received("c0".repeat(32), {
+      assetId: USDC_ASSET,
+      mint: USDC,
+      amount: "5000000",
+      createdAt: NOW - PHANTOM_NOTE_GRACE_MS - 1
+    })
+    const liveSpl = received("c1".repeat(32), {
+      assetId: USDC_ASSET,
+      mint: USDC,
+      amount: "3000000",
+      createdAt: NOW - PHANTOM_NOTE_GRACE_MS - 1
+    })
+    const freshSpl = received("c2".repeat(32), {
+      assetId: USDC_ASSET,
+      mint: USDC,
+      amount: "1000000",
+      createdAt: NOW - 1000
+    })
+    const phantomSol = received("c3".repeat(32), {
+      amount: "9000000",
+      createdAt: NOW - PHANTOM_NOTE_GRACE_MS - 1
+    })
+    const depositSol = deposit({
+      signature: "sig-dep",
+      commitment: "c4".repeat(32),
+      leafIndex: 7,
+      createdAt: NOW - PHANTOM_NOTE_GRACE_MS - 1
+    })
+
+    await addDiscoveredNote(ACCOUNT, phantomSpl)
+    await addDiscoveredNote(ACCOUNT, liveSpl)
+    await addDiscoveredNote(ACCOUNT, freshSpl)
+    await addDiscoveredNote(ACCOUNT, phantomSol)
+    await addNote(ACCOUNT, depositSol)
+
+    let fetches = 0
+    const surviving = await reconcilePhantomNotes(
+      ACCOUNT,
+      await getNotes(ACCOUNT),
+      async () => {
+        fetches++
+        return [{ commitmentHex: "c1".repeat(32) }]
+      },
+      NOW
+    )
+
+    expect(fetches).toBe(1)
+    expect(surviving.map((n) => n.commitment ?? n.signature)).toEqual([
+      "c1".repeat(32),
+      "c2".repeat(32),
+      "c4".repeat(32)
+    ])
+    expect(await shieldedTokenBalances(ACCOUNT)).toEqual({ [USDC]: 4_000_000n })
+    expect(await shieldedBalance(ACCOUNT)).toBe(1000n)
+  })
+
+  it("normalizes empty mint on native SOL round-trip reshield notes so shieldedBalance counts them and dedupes against depositV3", async () => {
+    await persistReshieldedNote(ACCOUNT, {
+      assetId: "00".repeat(32),
+      mint: "",
+      amount: "50000000",
+      blindingHex: "ee".repeat(32),
+      depositSignature: "sig-native-reshield"
+    })
+    // Deduplicates if called again with the same deposit signature
+    await persistReshieldedNote(ACCOUNT, {
+      assetId: "00".repeat(32),
+      mint: "",
+      amount: "50000000",
+      blindingHex: "ee".repeat(32),
+      depositSignature: "sig-native-reshield"
+    })
+
+    expect(await shieldedBalance(ACCOUNT)).toBe(50_000_000n)
+    expect(await shieldedTokenBalances(ACCOUNT)).toEqual({})
   })
 })

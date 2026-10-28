@@ -3,7 +3,7 @@ import { Connection, PublicKey } from "@solana/web3.js"
 import { getAutoLockMinutes, getStoredWallet, isWalletLocked, setLockState } from "~lib/storage/secure"
 import { addApprovedOrigin, isOriginApproved, removeApprovedOrigin } from "~lib/storage/connections"
 import { clearSession, getLastActivity, loadSession, recordActivity } from "~lib/storage/session"
-import { addNote, getNotes, markNoteSpentByCommitment, shieldedBalance, shieldedTokenBalances, type ShieldedNote } from "~lib/paraloom/notes"
+import { addNote, getNotes, markNoteSpentByCommitment, reconcilePhantomNotes, shieldedBalance, shieldedTokenBalances, type ShieldedNote } from "~lib/paraloom/notes"
 import { scanForNotes } from "~lib/paraloom/scan"
 import {
   associatedTokenAddress,
@@ -805,36 +805,7 @@ async function dropPhantomNotes(
   account: string,
   notes: ShieldedNote[]
 ): Promise<ShieldedNote[]> {
-  const GRACE_MS = 120_000
-  const suspects = notes.filter(
-    (n) =>
-      n.leafIndex === undefined &&
-      !!n.commitment &&
-      Date.now() - n.createdAt > GRACE_MS
-  )
-  if (suspects.length === 0) return notes
-
-  let onchain: Set<string>
-  try {
-    const leaves = await fetchV3Leaves(connection)
-    onchain = new Set(leaves.map((l) => l.commitmentHex))
-  } catch {
-    return notes // cannot rebuild the tree safely — drop nothing
-  }
-
-  const dropped = new Set<string>()
-  for (const n of suspects) {
-    if (n.commitment && !onchain.has(n.commitment)) {
-      await markNoteSpentByCommitment(account, n.commitment)
-      dropped.add(n.commitment)
-    }
-  }
-  if (dropped.size > 0) {
-    console.log(
-      `[paraloom] reconciled ${dropped.size} phantom note(s) not present on-chain`
-    )
-  }
-  return notes.filter((n) => !(n.commitment && dropped.has(n.commitment)))
+  return reconcilePhantomNotes(account, notes, () => fetchV3Leaves(connection))
 }
 
 // The actual spend. Runs only after handlePrivateSwapRequest approved it.
@@ -869,17 +840,21 @@ async function handlePrivateSwap(
       new PublicKey(params.inputMint).toBuffer().toString("hex")
     )
     const allNotes = await getNotes(shieldedAddress)
-    const tokenCandidates = allNotes.filter(
-      (n) => !n.spent && n.assetId === inputAssetId
-    )
-    const tokenInputs = selectNotes(tokenCandidates, amount)
-    const nativeCandidates = allNotes.filter(
-      (n) => !n.spent && n.assetId === NATIVE_ASSET_HEX
-    )
-    const gasNotes = await dropPhantomNotes(
+    const relevantNotes = await dropPhantomNotes(
       connection,
       shieldedAddress,
-      nativeCandidates
+      allNotes.filter(
+        (n) =>
+          !n.spent &&
+          (n.assetId === inputAssetId || n.assetId === NATIVE_ASSET_HEX)
+      )
+    )
+    const tokenCandidates = relevantNotes.filter(
+      (n) => n.assetId === inputAssetId
+    )
+    const tokenInputs = selectNotes(tokenCandidates, amount)
+    const gasNotes = relevantNotes.filter(
+      (n) => n.assetId === NATIVE_ASSET_HEX
     )
     let gasInputs: ShieldedNote[]
     try {

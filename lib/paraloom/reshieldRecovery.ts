@@ -28,7 +28,7 @@ export async function persistReshieldedNote(
     amount: note.amount,
     blinding: note.blindingHex,
     assetId: note.assetId,
-    mint: note.mint,
+    mint: note.mint || undefined,
     signature: note.depositSignature,
     createdAt: Date.now(),
     spent: false,

@@ -154,3 +154,51 @@ export async function shieldedTokenBalances(
   }
   return byMint
 }
+
+export const PHANTOM_NOTE_GRACE_MS = 120_000
+
+// Reconcile out phantom change/received notes whose commitment is absent from
+// the on-chain tree after the settlement grace window. Deposit notes carry a
+// trusted on-chain leafIndex and are untouched; only commitment-indexed notes
+// (leafIndex === undefined && !!commitment) older than `graceMs` are checked.
+// Used for BOTH native SOL notes and SPL token notes before selection so a
+// stale SPL change note cannot pass selection and abort a token swap after
+// self-funded gas SOL has already been withdrawn and spent on ATA creation.
+export async function reconcilePhantomNotes(
+  account: string,
+  notes: ShieldedNote[],
+  fetchLeaves: () => Promise<{ commitmentHex: string }[]>,
+  now = Date.now(),
+  graceMs = PHANTOM_NOTE_GRACE_MS
+): Promise<ShieldedNote[]> {
+  const suspects = notes.filter(
+    (n) =>
+      !n.spent &&
+      n.leafIndex === undefined &&
+      !!n.commitment &&
+      now - n.createdAt > graceMs
+  )
+  if (suspects.length === 0) return notes
+
+  let onchain: Set<string>
+  try {
+    const leaves = await fetchLeaves()
+    onchain = new Set(leaves.map((l) => l.commitmentHex))
+  } catch {
+    return notes // cannot rebuild the tree safely — drop nothing
+  }
+
+  const dropped = new Set<string>()
+  for (const n of suspects) {
+    if (n.commitment && !onchain.has(n.commitment)) {
+      await markNoteSpentByCommitment(account, n.commitment)
+      dropped.add(n.commitment)
+    }
+  }
+  if (dropped.size > 0) {
+    console.log(
+      `[paraloom] reconciled ${dropped.size} phantom note(s) not present on-chain`
+    )
+  }
+  return notes.filter((n) => !(n.commitment && dropped.has(n.commitment)))
+}
